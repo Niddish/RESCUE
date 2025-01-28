@@ -1,0 +1,135 @@
+import json
+import yaml
+import pynvml
+import time
+import os
+import logging
+
+# Configure logging to both terminal and a log file
+log_file = "gpu_monitor.log"
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s - %(message)s",
+    handlers=[logging.FileHandler(log_file), logging.StreamHandler()]
+)
+
+def load_config(filepath):
+    """Load the YAML configuration file."""
+    with open(filepath, 'r') as f:
+        config = yaml.safe_load(f)
+    return config
+
+def extract_parallel_settings(config, total_gpus=96):
+    """Extract parallelism settings and compute data parallel size."""
+    pipe_parallel_size = config.get("pipe_parallel_size", 1)
+    model_parallel_size = config.get("model_parallel_size", 1)
+    
+    # Compute data parallel size dynamically
+    data_parallel_size = total_gpus // (pipe_parallel_size * model_parallel_size)
+    
+    return {
+        "pipe_parallel_size": pipe_parallel_size,
+        "model_parallel_size": model_parallel_size,
+        "data_parallel_size": data_parallel_size,
+    }
+
+def check_zero_optimization(config):
+    """Check for ZeRO optimization settings."""
+    zero_config = config.get("zero_optimization", {})
+    zero_stage = zero_config.get("stage", 0)
+    return zero_stage
+
+def get_available_gpus():
+    """Detect available GPUs using NVML and environment variables."""
+    pynvml.nvmlInit()
+
+    # First, check CUDA_VISIBLE_DEVICES
+    cuda_visible_devices = os.getenv("CUDA_VISIBLE_DEVICES")
+    if cuda_visible_devices:
+        gpu_indices = [int(x) for x in cuda_visible_devices.split(",") if x.isdigit()]
+    else:
+        # If not set, detect all available GPUs via NVML
+        gpu_indices = list(range(pynvml.nvmlDeviceGetCount()))
+
+    # Fetch detailed info for each GPU
+    gpu_info = []
+    for i in gpu_indices:
+        handle = pynvml.nvmlDeviceGetHandleByIndex(i)
+        name = pynvml.nvmlDeviceGetName(handle).decode()
+        memory = pynvml.nvmlDeviceGetMemoryInfo(handle)
+        utilization = pynvml.nvmlDeviceGetUtilizationRates(handle)
+        temperature = pynvml.nvmlDeviceGetTemperature(handle, pynvml.NVML_TEMPERATURE_GPU)
+
+        gpu_info.append({
+            "id": i,
+            "name": name,
+            "memory_used_MB": memory.used // (1024 * 1024),
+            "memory_total_MB": memory.total // (1024 * 1024),
+            "utilization_pct": utilization.gpu,
+            "temperature_C": temperature
+        })
+
+    pynvml.nvmlShutdown()
+    return gpu_info
+
+def construct_3d_topology(parallel_settings, gpu_info):
+    """Construct a 3D topology representation and map to NVML GPUs dynamically."""
+    pipe_size = parallel_settings["pipe_parallel_size"]
+    model_size = parallel_settings["model_parallel_size"]
+    data_size = parallel_settings["data_parallel_size"]
+    
+    topology = []
+    gpu_id = 0
+
+    for dp in range(data_size):
+        data_group = []
+        for pp in range(pipe_size):
+            pipe_group = []
+            for mp in range(model_size):
+                if gpu_id < len(gpu_info):
+                    gpu_data = gpu_info[gpu_id]
+                    gpu_str = (f"GPU {gpu_data['id']} ({gpu_data['name']}) | "
+                               f"Mem: {gpu_data['memory_used_MB']}MB/{gpu_data['memory_total_MB']}MB | "
+                               f"Util: {gpu_data['utilization_pct']}% | "
+                               f"Temp: {gpu_data['temperature_C']}°C")
+                else:
+                    gpu_str = f"GPU {gpu_id} (Placeholder)"
+                
+                pipe_group.append(gpu_str)
+                gpu_id += 1
+            data_group.append(pipe_group)
+        topology.append(data_group)
+    
+    return topology
+
+def log_gpu_stats(config_path):
+    """Monitor and log GPU stats continuously every 5 seconds."""
+    config = load_config(config_path)
+    
+    # Extract values
+    parallel_settings = extract_parallel_settings(config)
+    zero_stage = check_zero_optimization(config)
+    
+    logging.info("\n==== GPU Monitor Started ====")
+    logging.info("Parallelism Settings: %s", json.dumps(parallel_settings, indent=4))
+    logging.info("ZeRO Optimization Stage: %d", zero_stage)
+
+    while True:
+        gpu_info = get_available_gpus()
+        topology = construct_3d_topology(parallel_settings, gpu_info)
+
+        log_message = "\n=== GPU Topology Update ===\n"
+        for dp, data_group in enumerate(topology):
+            log_message += f"Data Parallel Group {dp}:\n"
+            for pp, pipe_group in enumerate(data_group):
+                log_message += f"  Pipeline Stage {pp}: {pipe_group}\n"
+
+        # Print and log GPU usage
+        logging.info(log_message)
+
+        # Sleep for 5 seconds before next update
+        time.sleep(5)
+
+if __name__ == "__main__":
+    config_filepath = "20B.yml"  # Update this if needed
+    log_gpu_stats(config_filepath)
