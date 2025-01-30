@@ -55,7 +55,7 @@ def get_available_gpus():
     gpu_info = []
     for i in gpu_indices:
         handle = pynvml.nvmlDeviceGetHandleByIndex(i)
-        name = pynvml.nvmlDeviceGetName(handle).decode()
+        name = pynvml.nvmlDeviceGetName(handle)
         memory = pynvml.nvmlDeviceGetMemoryInfo(handle)
         utilization = pynvml.nvmlDeviceGetUtilizationRates(handle)
         temperature = pynvml.nvmlDeviceGetTemperature(handle, pynvml.NVML_TEMPERATURE_GPU)
