@@ -25,9 +25,5 @@ def main():
             for gpu_str in pipe_group:
                 print(f"    {gpu_str}")
     
-    # Print the full configuration for reference.
-    print("\nFull Configuration:")
-    print(json.dumps(config, indent=4))
-    
 if __name__ == "__main__":
     main()
