@@ -1,58 +1,43 @@
-from flask import Flask
 import json
-from gpu_data import get_available_gpus
-from config_topology import generate_topology_from_config
+import os
+from flask import Flask
 
-class TopologyWebServer:
-    def __init__(self, config_filepath, total_gpus=96, host='0.0.0.0', port=5000):
-        """
-        Initialize the web server with a given configuration file, total GPU count,
-        and the host/port to bind the Flask app.
-        """
-        self.config_filepath = config_filepath
-        self.total_gpus = total_gpus
-        self.host = host
-        self.port = port
-        self.app = Flask(__name__)
-        self.setup_routes()
+app = Flask(__name__)
 
-    def setup_routes(self):
-        """
-        Define the Flask route(s). In this example, the root URL ("/") will generate
-        the current 3D topology and display it as formatted text.
-        """
-        @self.app.route("/")
-        def topology():
-            # Retrieve current GPU information.
-            gpu_info = get_available_gpus()
+# Path to the JSON file produced by main.py
+FILE_PATH = "gpu_topology.json"
 
-            # Generate the topology, parallel settings, and full config using the provided YAML.
-            topology, parallel_settings, config = generate_topology_from_config(
-                self.config_filepath, gpu_info, self.total_gpus
-            )
+@app.route("/")
+def index():
+    # Check if the file exists
+    if not os.path.exists(FILE_PATH):
+        return ("<h2>Data file not found.</h2>"
+                "<p>Please run the main script to generate the data.</p>")
+    
+    try:
+        # Read the JSON data from the file
+        with open(FILE_PATH, "r") as f:
+            data = json.load(f)
+        # Format the JSON data as a pretty-printed string
+        formatted_data = json.dumps(data, indent=4)
+    except Exception as e:
+        return f"<h2>Error reading file:</h2><p>{e}</p>"
 
-            # Build a multi-line string representing the topology.
-            output_lines = []
-            output_lines.append("Parallel Settings:")
-            output_lines.append(json.dumps(parallel_settings, indent=4))
-            output_lines.append("\nGenerated 3D Topology:")
+    # Return HTML that includes a meta refresh tag to reload every 5 seconds
+    html_content = f"""
+    <html>
+      <head>
+        <meta http-equiv="refresh" content="5">
+        <title>GPU Topology Monitor</title>
+      </head>
+      <body>
+        <h2>GPU Topology Data (updated every 5 seconds):</h2>
+        <pre>{formatted_data}</pre>
+      </body>
+    </html>
+    """
+    return html_content
 
-            for dp_idx, data_group in enumerate(topology):
-                output_lines.append(f"Data Parallel Group {dp_idx}:")
-                for pp_idx, pipe_group in enumerate(data_group):
-                    output_lines.append(f"  Pipeline Stage {pp_idx}:")
-                    for gpu_str in pipe_group:
-                        output_lines.append(f"    {gpu_str}")
-
-            output_lines.append("\nFull Configuration:")
-            output_lines.append(json.dumps(config, indent=4))
-            output_text = "\n".join(output_lines)
-
-            # Return the output wrapped in <pre> tags to preserve formatting.
-            return f"<pre>{output_text}</pre>"
-
-    def run(self):
-        """
-        Run the Flask web server.
-        """
-        self.app.run(host=self.host, port=self.port)
+if __name__ == "__main__":
+    # Run the Flask app on all interfaces so that it is accessible via SSH tunneling
+    app.run(host="0.0.0.0", port=8080)
